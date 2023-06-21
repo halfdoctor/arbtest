@@ -9,17 +9,20 @@ import {
 } from "@arb-protocol/core";
 import { startTUI } from "@arb-protocol/tui";
 import { runWizard } from "@arb-protocol/wizard";
-
-import * as dotenv from "dotenv";
 import fs from "fs";
-import path from "path";
+import { validateEnv } from "./validate-env";
+
+const JupiterAggregator = require.resolve("@arb-protocol/jupiter-adapter");
 
 // set process title
 process.title = `ARB v2.0`;
 
+// TODO: validate config.json with zod
+
 // import { io } from "socket.io-client";
 
 export const start = async () => {
+	await sleep(1000); // wait for logger
 	try {
 		// TODO: finish WS integration
 		// const socket = io("http://localhost:1337");
@@ -40,19 +43,8 @@ export const start = async () => {
 		// 	});
 		// });
 
-		// if there is no .env file, throw error
-		if (!fs.existsSync("./.env")) {
-			console.log(`
-			No .env file found!
-			# What to do?
-			- copy .env.example to .env
-			- fill in the values correctly
-			`);
-			await sleep(1000); // wait for logger
-			process.exit(1);
-		}
-		// load .env file
-		dotenv.config();
+		const ENV = await validateEnv();
+
 		// // if there is no config.json file, run the wizard that will generate one
 		if (!fs.existsSync("./config.json")) await runWizard();
 		// // if there is no temp directory, create it
@@ -72,6 +64,14 @@ export const start = async () => {
 					enableAutoSlippage: boolean;
 				};
 				tokens: string[];
+				autoReset?: {
+					enabled: boolean;
+					timeWindowMs: number;
+				},
+				expectedProfitBasedStopLoss?: {
+					enabled: boolean;
+					percent: number;
+				}
 			};
 		} = JSON.parse(fs.readFileSync("./config.json", "utf8"));
 
@@ -99,6 +99,10 @@ export const start = async () => {
 			priorityFeeMicroLamports: config.strategy.priorityFeeMicroLamports,
 			enableAutoSlippage: config.strategy.slippage.enableAutoSlippage,
 			enableCompounding: config.strategy.enableCompounding ?? false,
+			autoReset: config.strategy.autoReset,
+			expectedProfitBasedStopLoss: config.strategy.expectedProfitBasedStopLoss,
+			onStopLossAction: "sell&reset"
+			
 		});
 
 		const bot = extendBot(
@@ -106,15 +110,12 @@ export const start = async () => {
 			plugins.withGreeter
 		)({
 			strategies: [PingPongStrategy],
-			aggregators: [
-				// TODO: maybe try to auto load all aggregators with absolute paths
-				path.resolve(__dirname, "aggregators/jupiter-aggregator.js"),
-			],
+			aggregators: [JupiterAggregator],
 			dataProviders: [SolscanDataProvider],
 			config: {
 				maxConcurrent: 1,
-				wallets: [process.env.SOLANA_WALLET_PRIVATE_KEY as string],
-				rpcURLs: [process.env.DEFAULT_RPC as string],
+				wallets: [ENV.SOLANA_WALLET_PRIVATE_KEY],
+				rpcURLs: [ENV.DEFAULT_RPC],
 				rpcWSSs: [process.env.DEFAULT_RPC_WSS as string],
 				limiters: config.limiters,
 				arbProtocolBuyBack: config.arbProtocolBuyBack,
@@ -127,7 +128,8 @@ export const start = async () => {
 		startTUI(bot, {
 			/** Default true */
 			allowClearConsole: config?.tui?.allowClearConsole,
-			fps: process.env.TUI_FPS ? parseInt(process.env.TUI_FPS) : 5,
+			fps: ENV.TUI_FPS,
+			tradeHistoryMaxRows: ENV.TUI_TRADE_HISTORY_MAX_ROWS,
 		});
 
 		await bot.start();
